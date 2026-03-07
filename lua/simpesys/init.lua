@@ -27,7 +27,7 @@ function M.get_cmd()
 		"--allow-read",
 		"--allow-write",
 		"--allow-run",
-		"jsr:@simpesys/lsp",
+		"jsr:@simpesys/lsp@0.1.1",
 		"--stdio",
 	}
 end
