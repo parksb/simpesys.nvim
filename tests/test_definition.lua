@@ -1,5 +1,5 @@
 local passed, failed = 0, 0
-local original_confirm = vim.fn.confirm
+local original_input = vim.ui.input
 local original_notify = vim.notify
 local root = vim.fn.tempname()
 vim.fn.mkdir(root .. "/docs/sub", "p")
@@ -7,7 +7,7 @@ root = vim.uv.fs_realpath(root)
 
 local function test(name, fn)
 	local ok, err = pcall(fn)
-	vim.fn.confirm = original_confirm
+	vim.ui.input = original_input
 	vim.notify = original_notify
 	if ok then
 		passed = passed + 1
@@ -54,25 +54,29 @@ end
 
 print("test_definition:")
 
-test("creates missing document from unsaved text and returns navigation location", function()
+test("opens a new buffer and creates the document only on write", function()
 	local c, p, b = fixture("[[new-document]]")
-	vim.fn.confirm = function(prompt, choices, default)
-		assert(prompt:find("new-document.md", 1, true))
-		assert(choices == "&Yes\n&No" and default == 2)
+	vim.ui.input = function(opts, callback)
+		assert(opts.prompt:find("new-document.md", 1, true))
+		assert(opts.prompt:find("? [y/N]: ", 1, true))
 		assert(vim.fn.filereadable(root .. "/docs/new-document.md") == 0)
-		return 1
+		callback("y")
 	end
 	local response = request(c, p, b)
-	assert(vim.fn.filereadable(root .. "/docs/new-document.md") == 1)
+	assert(vim.fn.filereadable(root .. "/docs/new-document.md") == 0)
 	assert(vim.lsp.util.show_document(response.result, "utf-16", { focus = true }))
 	assert(vim.api.nvim_buf_get_name(0) == root .. "/docs/new-document.md")
+	assert(vim.fn.filereadable(root .. "/docs/new-document.md") == 0)
+	vim.api.nvim_buf_set_lines(0, 0, -1, false, { "# New document" })
+	vim.cmd.write()
+	assert(vim.fn.readfile(root .. "/docs/new-document.md")[1] == "# New document")
 end)
 
 for _, choice in ipairs({ "No", "cancel" }) do
 	test(choice .. " does not create a file", function()
 		local c, p, b = fixture("[[declined]]")
-		vim.fn.confirm = function()
-			return choice == "No" and 2 or 0
+		vim.ui.input = function(_, callback)
+			callback(choice == "No" and "n" or nil)
 		end
 		assert(request(c, p, b).called)
 		assert(vim.fn.filereadable(root .. "/docs/declined.md") == 0)
@@ -82,12 +86,13 @@ end
 test("prompts again after No and dismissal on the same client", function()
 	local c, p, b = fixture("[[retry-document]]")
 	local path = root .. "/docs/retry-document.md"
-	local choices = { 2, 0, 1 }
+	local choices = { "n", "", "yes" }
 	local prompts = 0
-	vim.fn.confirm = function(prompt)
+	vim.ui.input = function(opts, callback)
 		prompts = prompts + 1
-		assert(prompt:find("retry-document.md", 1, true))
-		return choices[prompts]
+		assert(opts.prompt:find("retry-document.md", 1, true))
+		assert(opts.prompt:find("? [y/N]: ", 1, true))
+		callback(choices[prompts])
 	end
 	for attempt = 1, 2 do
 		local response = request(c, p, b)
@@ -98,12 +103,36 @@ test("prompts again after No and dismissal on the same client", function()
 	local response = request(c, p, b)
 	assert(prompts == 3)
 	assert(response.result.uri == vim.uri_from_fname(path))
-	assert(vim.fn.filereadable(path) == 1)
+	assert(vim.fn.filereadable(path) == 0)
+end)
+
+test("real input keeps the full question on repeated requests", function()
+	local c, p, b = fixture("[[real-input]]")
+	local prompts = {}
+	local autocmd = vim.api.nvim_create_autocmd("CmdlineEnter", {
+		callback = function()
+			prompts[#prompts + 1] = vim.fn.getcmdprompt()
+		end,
+	})
+	local ok, err = pcall(function()
+		for _ = 1, 2 do
+			vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("n<CR>", true, false, true), "nt", false)
+			local response = request(c, p, b)
+			assert(response.called and response.result == nil)
+		end
+	end)
+	vim.api.nvim_del_autocmd(autocmd)
+	assert(ok, err)
+	assert(#prompts == 2)
+	for _, prompt in ipairs(prompts) do
+		assert(prompt:find("Document does not exist. Open new buffer for ", 1, true))
+		assert(prompt:find("real-input.md? [y/N]: ", 1, true))
+	end
 end)
 
 test("existing LSP locations and errors pass through without prompting", function()
 	local c, p, b = fixture("[[existing]]")
-	vim.fn.confirm = function()
+	vim.ui.input = function()
 		error("unexpected prompt")
 	end
 	c.result = { uri = "file:///existing.md" }
@@ -114,7 +143,7 @@ test("existing LSP locations and errors pass through without prompting", functio
 end)
 
 test("non-links and inline code do not prompt", function()
-	vim.fn.confirm = function()
+	vim.ui.input = function()
 		error("unexpected prompt")
 	end
 	for _, line in ipairs({ "plain text", "`[[code]]`" }) do
@@ -130,37 +159,48 @@ test("relative paths, custom docs directory, labels and UTF-16 positions", funct
 	})
 	p.position.character = 10
 	c.result = {}
-	vim.fn.confirm = function()
-		return 1
+	vim.ui.input = function(_, callback)
+		callback("y")
 	end
 	local response = request(c, p, b)
 	assert(response.result.uri == vim.uri_from_fname(root .. "/notes/nested/새문서.md"))
-	assert(vim.fn.filereadable(root .. "/notes/nested/새문서.md") == 1)
+	local path = root .. "/notes/nested/새문서.md"
+	assert(vim.fn.filereadable(path) == 0)
+	assert(vim.fn.isdirectory(root .. "/notes") == 0)
+	assert(vim.lsp.util.show_document(response.result, "utf-16", { focus = true }))
+	assert(vim.fn.isdirectory(root .. "/notes") == 0)
+	vim.api.nvim_buf_set_lines(0, 0, -1, false, { "# 새문서" })
+	vim.cmd.write()
+	assert(vim.fn.readfile(path)[1] == "# 새문서")
 end)
 
 test("does not overwrite a file created while confirmation is open", function()
 	local c, p, b = fixture("[[race]]")
 	local path = root .. "/docs/race.md"
-	vim.fn.confirm = function()
+	vim.ui.input = function(_, callback)
 		vim.fn.writefile({ "preserved" }, path)
-		return 1
+		callback("y")
 	end
 	assert(request(c, p, b).result.uri == vim.uri_from_fname(path))
 	assert(vim.fn.readfile(path)[1] == "preserved")
 end)
 
-test("creation errors are reported and complete the request", function()
-	vim.fn.writefile({ "not a directory" }, root .. "/docs/blocked")
-	local c, p, b = fixture("[[blocked/child]]")
-	local notified = false
-	vim.notify = function(_, level)
-		notified = level == vim.log.levels.ERROR
-	end
-	vim.fn.confirm = function()
-		return 1
+test("discarding a new buffer creates neither file nor directories", function()
+	local c, p, b = fixture("[[discarded/draft]]")
+	vim.ui.input = function(_, callback)
+		callback("y")
 	end
 	local response = request(c, p, b)
-	assert(notified and response.called and response.result == nil)
+	assert(vim.lsp.util.show_document(response.result, "utf-16", { focus = true }))
+	local draft = vim.api.nvim_get_current_buf()
+	vim.api.nvim_buf_set_lines(draft, 0, -1, false, { "Unsaved draft" })
+	vim.ui.input = function()
+		error("unexpected prompt for an open draft")
+	end
+	assert(request(c, p, b).result.uri == response.result.uri)
+	assert(vim.api.nvim_buf_get_lines(draft, 0, -1, false)[1] == "Unsaved draft")
+	vim.api.nvim_buf_delete(draft, { force = true })
+	assert(vim.fn.isdirectory(root .. "/docs/discarded") == 0)
 end)
 
 test("attaching twice does not wrap the client again", function()
@@ -170,7 +210,7 @@ test("attaching twice does not wrap the client again", function()
 	assert(c.request == wrapped)
 end)
 
-test("standard vim.lsp.buf.definition opens the created document", function()
+test("standard vim.lsp.buf.definition opens an unwritten document buffer", function()
 	local c, p, b = fixture("[[standard-navigation]]")
 	c.id = 123
 	c.name = "simpesys"
@@ -194,8 +234,8 @@ test("standard vim.lsp.buf.definition opens the created document", function()
 		end, buf)
 		c.pending()
 	end
-	vim.fn.confirm = function()
-		return 1
+	vim.ui.input = function(_, callback)
+		callback("y")
 	end
 	local ok, err = pcall(vim.lsp.buf.definition)
 	vim.lsp.get_clients = get_clients
@@ -203,6 +243,7 @@ test("standard vim.lsp.buf.definition opens the created document", function()
 	vim.lsp.buf_request_all = request_all
 	assert(ok, err)
 	assert(vim.api.nvim_buf_get_name(0) == root .. "/docs/standard-navigation.md")
+	assert(vim.fn.filereadable(root .. "/docs/standard-navigation.md") == 0)
 end)
 
 vim.fn.delete(root, "rf")

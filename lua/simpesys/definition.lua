@@ -61,19 +61,17 @@ local function location(path)
 	}
 end
 
-local function create_file(path)
-	vim.fn.mkdir(vim.fs.dirname(path), "p")
-	-- Exclusive creation prevents overwriting files created while the prompt was open.
-	local fd, err, code = vim.uv.fs_open(path, "wx", 420)
-	if not fd then
-		if code == "EEXIST" and vim.fn.filereadable(path) == 1 then
-			return
-		end
-		error(err)
-	end
-	local ok, close_err = vim.uv.fs_close(fd)
-	if not ok then
-		error(close_err)
+local function prepare_buffer(path)
+	local bufnr = vim.fn.bufadd(path)
+	if not vim.b[bufnr].simpesys_new_document then
+		vim.b[bufnr].simpesys_new_document = true
+		-- Defer directory creation as well as the file write until the user saves.
+		vim.api.nvim_create_autocmd("BufWritePre", {
+			buffer = bufnr,
+			callback = function(args)
+				vim.fn.mkdir(vim.fn.fnamemodify(args.file, ":p:h"), "p")
+			end,
+		})
 	end
 end
 
@@ -95,18 +93,28 @@ function M.attach(client)
 			if err or not path or (result and next(result) ~= nil) then
 				return handler(err, result, ctx, config)
 			end
-			if vim.fn.filereadable(path) == 1 then
+			if vim.fn.filereadable(path) == 1 or vim.fn.bufloaded(path) == 1 then
 				return handler(nil, location(path), ctx, config)
 			end
-			local choice = vim.fn.confirm("Document does not exist. Create " .. path .. "?", "&Yes\n&No", 2)
-			if choice == 1 then
-				local ok, create_err = pcall(create_file, path)
-				if ok then
-					return handler(nil, location(path), ctx, config)
+			-- Keep the question and choices in one cmdline prompt. Message UIs can
+			-- deduplicate confirm()'s separate message and hide it on later calls.
+			vim.ui.input(
+				{ prompt = "Document does not exist. Open new buffer for " .. path .. "? [y/N]: " },
+				function(input)
+					local choice = input and vim.trim(input):lower()
+					if choice == "y" or choice == "yes" then
+						local ok, open_err = pcall(prepare_buffer, path)
+						if ok then
+							return handler(nil, location(path), ctx, config)
+						end
+						vim.notify(
+							"Simpesys: could not open document buffer: " .. tostring(open_err),
+							vim.log.levels.ERROR
+						)
+					end
+					handler(err, result, ctx, config)
 				end
-				vim.notify("Simpesys: could not create document: " .. tostring(create_err), vim.log.levels.ERROR)
-			end
-			handler(err, result, ctx, config)
+			)
 		end, bufnr)
 	end
 end
