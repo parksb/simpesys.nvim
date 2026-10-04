@@ -33,6 +33,35 @@ test("setup with lsp.cmd overrides get_cmd", function()
 	assert(cmd[2] == "--flag", "expected '--flag', got " .. tostring(cmd[2]))
 end)
 
+if vim.fn.executable("deno") == 1 then
+	test("default Deno flags isolate project configuration and lockfiles", function()
+		package.loaded["simpesys"] = nil
+		local cmd = require("simpesys").get_cmd()
+		local dir = vim.fn.tempname()
+		vim.fn.mkdir(dir, "p")
+		-- An unreadable config/lockfile would stop Deno if discovery were enabled.
+		local sentinel = { "not valid JSON; must not be read or modified" }
+		vim.fn.writefile(sentinel, dir .. "/deno.json")
+		vim.fn.writefile(sentinel, dir .. "/deno.lock")
+		vim.fn.writefile({ 'console.log("isolated")' }, dir .. "/main.ts")
+		-- Exercise the actual runtime flags without downloading the LSP package.
+		cmd[#cmd - 1] = dir .. "/main.ts"
+		table.remove(cmd)
+		local ok, err = pcall(function()
+			local result = vim.system(cmd, { cwd = dir, text = true }):wait()
+			assert(result.code == 0, result.stderr)
+			assert(result.stdout == "isolated\n")
+			assert(vim.deep_equal(vim.fn.readfile(dir .. "/deno.lock"), sentinel))
+			vim.fn.delete(dir .. "/deno.lock")
+			result = vim.system(cmd, { cwd = dir, text = true }):wait()
+			assert(result.code == 0, result.stderr)
+			assert(vim.fn.filereadable(dir .. "/deno.lock") == 0)
+		end)
+		vim.fn.delete(dir, "rf")
+		assert(ok, err)
+	end)
+end
+
 test("plugin registers vim.lsp.config for simpesys", function()
 	package.loaded["simpesys"] = nil
 	vim.g.loaded_simpesys = nil
@@ -63,3 +92,6 @@ test("lsp config has cmd set", function()
 end)
 
 print(string.format("\n  %d passed, %d failed", passed, failed))
+if failed > 0 then
+	vim.cmd("cquit")
+end

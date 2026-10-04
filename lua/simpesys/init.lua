@@ -23,6 +23,8 @@ function M.get_cmd()
 	return {
 		"deno",
 		"run",
+		"--no-config",
+		"--no-lock",
 		"--allow-env",
 		"--allow-read",
 		"--allow-write",
