@@ -98,18 +98,15 @@ function M.attach(client)
 			if vim.fn.filereadable(path) == 1 then
 				return handler(nil, location(path), ctx, config)
 			end
-			vim.ui.select({ "Yes", "No" }, {
-				prompt = "Document does not exist. Create " .. path .. "?",
-			}, function(choice)
-				if choice == "Yes" then
-					local ok, create_err = pcall(create_file, path)
-					if ok then
-						return handler(nil, location(path), ctx, config)
-					end
-					vim.notify("Simpesys: could not create document: " .. tostring(create_err), vim.log.levels.ERROR)
+			local choice = vim.fn.confirm("Document does not exist. Create " .. path .. "?", "&Yes\n&No", 2)
+			if choice == 1 then
+				local ok, create_err = pcall(create_file, path)
+				if ok then
+					return handler(nil, location(path), ctx, config)
 				end
-				handler(err, result, ctx, config)
-			end)
+				vim.notify("Simpesys: could not create document: " .. tostring(create_err), vim.log.levels.ERROR)
+			end
+			handler(err, result, ctx, config)
 		end, bufnr)
 	end
 end

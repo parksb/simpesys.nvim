@@ -1,5 +1,5 @@
 local passed, failed = 0, 0
-local original_select = vim.ui.select
+local original_confirm = vim.fn.confirm
 local original_notify = vim.notify
 local root = vim.fn.tempname()
 vim.fn.mkdir(root .. "/docs/sub", "p")
@@ -7,7 +7,7 @@ root = vim.uv.fs_realpath(root)
 
 local function test(name, fn)
 	local ok, err = pcall(fn)
-	vim.ui.select = original_select
+	vim.fn.confirm = original_confirm
 	vim.notify = original_notify
 	if ok then
 		passed = passed + 1
@@ -56,10 +56,11 @@ print("test_definition:")
 
 test("creates missing document from unsaved text and returns navigation location", function()
 	local c, p, b = fixture("[[new-document]]")
-	vim.ui.select = function(_, opts, callback)
-		assert(opts.prompt:find("new-document.md", 1, true))
+	vim.fn.confirm = function(prompt, choices, default)
+		assert(prompt:find("new-document.md", 1, true))
+		assert(choices == "&Yes\n&No" and default == 2)
 		assert(vim.fn.filereadable(root .. "/docs/new-document.md") == 0)
-		callback("Yes")
+		return 1
 	end
 	local response = request(c, p, b)
 	assert(vim.fn.filereadable(root .. "/docs/new-document.md") == 1)
@@ -70,17 +71,39 @@ end)
 for _, choice in ipairs({ "No", "cancel" }) do
 	test(choice .. " does not create a file", function()
 		local c, p, b = fixture("[[declined]]")
-		vim.ui.select = function(_, _, callback)
-			callback(choice == "No" and "No" or nil)
+		vim.fn.confirm = function()
+			return choice == "No" and 2 or 0
 		end
 		assert(request(c, p, b).called)
 		assert(vim.fn.filereadable(root .. "/docs/declined.md") == 0)
 	end)
 end
 
+test("prompts again after No and dismissal on the same client", function()
+	local c, p, b = fixture("[[retry-document]]")
+	local path = root .. "/docs/retry-document.md"
+	local choices = { 2, 0, 1 }
+	local prompts = 0
+	vim.fn.confirm = function(prompt)
+		prompts = prompts + 1
+		assert(prompt:find("retry-document.md", 1, true))
+		return choices[prompts]
+	end
+	for attempt = 1, 2 do
+		local response = request(c, p, b)
+		assert(response.called and response.result == nil)
+		assert(prompts == attempt)
+		assert(vim.fn.filereadable(path) == 0)
+	end
+	local response = request(c, p, b)
+	assert(prompts == 3)
+	assert(response.result.uri == vim.uri_from_fname(path))
+	assert(vim.fn.filereadable(path) == 1)
+end)
+
 test("existing LSP locations and errors pass through without prompting", function()
 	local c, p, b = fixture("[[existing]]")
-	vim.ui.select = function()
+	vim.fn.confirm = function()
 		error("unexpected prompt")
 	end
 	c.result = { uri = "file:///existing.md" }
@@ -91,7 +114,7 @@ test("existing LSP locations and errors pass through without prompting", functio
 end)
 
 test("non-links and inline code do not prompt", function()
-	vim.ui.select = function()
+	vim.fn.confirm = function()
 		error("unexpected prompt")
 	end
 	for _, line in ipairs({ "plain text", "`[[code]]`" }) do
@@ -107,8 +130,8 @@ test("relative paths, custom docs directory, labels and UTF-16 positions", funct
 	})
 	p.position.character = 10
 	c.result = {}
-	vim.ui.select = function(_, _, callback)
-		callback("Yes")
+	vim.fn.confirm = function()
+		return 1
 	end
 	local response = request(c, p, b)
 	assert(response.result.uri == vim.uri_from_fname(root .. "/notes/nested/새문서.md"))
@@ -118,9 +141,9 @@ end)
 test("does not overwrite a file created while confirmation is open", function()
 	local c, p, b = fixture("[[race]]")
 	local path = root .. "/docs/race.md"
-	vim.ui.select = function(_, _, callback)
+	vim.fn.confirm = function()
 		vim.fn.writefile({ "preserved" }, path)
-		callback("Yes")
+		return 1
 	end
 	assert(request(c, p, b).result.uri == vim.uri_from_fname(path))
 	assert(vim.fn.readfile(path)[1] == "preserved")
@@ -133,8 +156,8 @@ test("creation errors are reported and complete the request", function()
 	vim.notify = function(_, level)
 		notified = level == vim.log.levels.ERROR
 	end
-	vim.ui.select = function(_, _, callback)
-		callback("Yes")
+	vim.fn.confirm = function()
+		return 1
 	end
 	local response = request(c, p, b)
 	assert(notified and response.called and response.result == nil)
@@ -171,8 +194,8 @@ test("standard vim.lsp.buf.definition opens the created document", function()
 		end, buf)
 		c.pending()
 	end
-	vim.ui.select = function(_, _, callback)
-		callback("Yes")
+	vim.fn.confirm = function()
+		return 1
 	end
 	local ok, err = pcall(vim.lsp.buf.definition)
 	vim.lsp.get_clients = get_clients
