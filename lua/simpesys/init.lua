@@ -57,8 +57,11 @@ function M.find_root(filepath)
 	return nil
 end
 
-function M.on_attach(bufnr)
+function M.on_attach(bufnr, client)
 	vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
+	if client then
+		require("simpesys.definition").attach(client)
+	end
 end
 
 return M

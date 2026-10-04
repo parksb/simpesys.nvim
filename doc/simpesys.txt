@@ -34,4 +34,11 @@ LINK STYLES                                           *simpesys-link-styles*
 
 Configured via `docs.linkStyle` in project config.
 
+Go to definition (for example, `vim.lsp.buf.definition()`) on an unresolved
+`[[key]]` link asks whether to create the document. Choosing Yes creates an
+empty `key.md`, including parent directories as needed, and opens it using
+normal LSP navigation. No or dismissal leaves the filesystem unchanged.
+Links resolve relative to the source document, including unsaved buffer text.
+Existing documents are opened without a prompt and are never overwritten.
+
  vim:tw=78:ft=help:norl:

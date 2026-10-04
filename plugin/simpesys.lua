@@ -23,6 +23,6 @@ vim.api.nvim_create_autocmd("LspAttach", {
 		if not client or client.name ~= "simpesys" then
 			return
 		end
-		simpesys.on_attach(args.buf)
+		simpesys.on_attach(args.buf, client)
 	end,
 })
